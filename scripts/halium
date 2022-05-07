@@ -165,7 +165,7 @@ mount_android_partitions() {
 	tell_kmsg "checking fstab $fstab for additional mount points"
 
 	# On systems with A/B partition layout, current slot is provided via cmdline parameter.
-	ab_slot_suffix=$(grep -o 'androidboot\.slot_suffix=..' /proc/cmdline | tail -1 | cut -d "=" -f2)
+	ab_slot_suffix=$(grep -o 'androidboot\.slot_suffix=..' /proc/cmdline |  cut -d "=" -f2)
 	[ ! -z "$ab_slot_suffix" ] && tell_kmsg "A/B slot system detected! Slot suffix is $ab_slot_suffix"
 
 	cat ${fstab} | while read line; do
@@ -205,7 +205,7 @@ mount_android_partitions() {
 	done
 
 	# Provide a bind mount from /cache to /userdata/cache on systems without a dedicated cache partition
-	if [ ! -e ${mount_root}/cache ] || ! grep -q "${mount_root}/cache" /proc/mounts; then
+	if [ ! -e ${mount_root}/cache ]; then
 		if [ ! -d ${real_userdata}/cache ]; then
 			mkdir ${real_userdata}/cache
 		fi
@@ -245,7 +245,7 @@ sync_dirs() {
 
 	for file in $source/*; do
 		# Skip empty directories
-		[ ! -e "$base/$file" -a ! -L "$base/$file" ] && continue
+		[ ! -e "$base/$file" ] && continue
 
 		# If the target already exists as a file or link, there's nothing we can do
 		[ -e "$target/$file" -o -L "$target/$file" ] && [ ! -d "$target/$file" ] && continue
@@ -288,6 +288,51 @@ resize_userdata_if_needed() {
 		resize2fs -f $path
 		tell_kmsg "resized userdata filesystem to fill $path"
 	fi
+}
+
+resize_lvm_if_needed() {
+	# Like resize_userdata_if_needed, but for devices with the droidian
+	# LVM vg in userdata.
+	#
+	# Note: this is meant to be done as an online resize. Thus, the stamp
+	# file is checked on the mounted rootfs partition.
+
+	pv=${1}
+	vg=${2}
+	lv=${3}
+
+	if [ ! -e "/halium-system/var/lib/halium/requires-lvm-resize" ]; then
+		# Bye bye
+		return
+	fi
+
+	part="/dev/${vg}/${lv}"
+
+	# Resize the underlying Physical Volume
+	if ! lvm pvresize ${pv}; then
+		tell_kmsg "Unable to resize PV ${pv}"
+		return
+	fi
+
+	# Now resize the rootfs LV with all the free extents
+	if ! lvm lvresize -l +100%FREE ${part}; then
+		tell_kmsg "Unable to resize LV ${lv}"
+		return
+	fi
+
+	# Finally resize the filesystem
+	if [ "$(blkid ${part} -o value -s TYPE)" == "ext4" ]; then
+		e2fsck -fy ${part}
+
+		if ! resize2fs -f ${part}; then
+			tell_kmsg "Unable to resize ext4 partition ${part}"
+			return
+		fi
+	else
+		tell_kmsg "Unsupported filesystem on ${part}"
+	fi
+
+	rm -f /halium-system/var/lib/halium/requires-lvm-resize
 }
 
 identify_file_layout() {
@@ -389,22 +434,12 @@ process_bind_mounts() {
 				sync_dirs $dstpath . $srcpath
 			fi
 
+			# Write the fstab entry
 			if [ "$5" = "none" ]; then
-				mount_opts="bind"
+				echo "$path $1 none bind 0 0" >>$FSTAB
 			else
-				mount_opts="bind,$5"
+				echo "$path $1 none bind,$5 0 0" >>$FSTAB
 			fi
-
-			# mount all /etc dirs right now, not later when fstab is
-			# processed, as it will cause races (e.g. /etc/machine-id).
-			case "$1" in
-				/etc/*)
-					mount -o "$mount_opts" "$srcpath" "$dstpath"
-					;;
-				*)
-					echo "$path $1 none $mount_opts 0 0" >>$FSTAB
-					;;
-			esac
 		else
 			continue
 		fi
@@ -486,59 +521,82 @@ mountroot() {
 		halium_panic "Couldn't find data partition."
 	fi
 
-	tell_kmsg "checking filesystem integrity for the userdata partition"
-	# Mounting and umounting first, let the kernel handle the journal and
-	# orphaned inodes (faster than e2fsck). Then, just run e2fsck forcing -y.
-	# Also check the amount of time used by to check the filesystem.
-	fsck_start=$(date +%s)
-	mount -o errors=remount-ro $path /tmpmnt
-	umount /tmpmnt
-	e2fsck -y $path >/run/e2fsck.out 2>&1
-	fsck_end=$(date +%s)
-	tell_kmsg "checking filesystem for userdata took (including e2fsck) $((fsck_end - fsck_start)) seconds"
-
-	resize_userdata_if_needed ${path}
-
-	tell_kmsg "mounting $path"
-
-	# Mount the data partition to a temporary mount point
-	# FIXME: data=journal used on ext4 as a workaround for bug 1387214
-	[ `blkid $path -o value -s TYPE` = "ext4" ] && OPTIONS="data=journal,"
-	mount -o discard,$OPTIONS $path /tmpmnt
-
-	# setup super partition if exists
-	if [ -n "/dev/disk/by-partlabel/super" ]; then
-		tell_kmsg "trying to parse and dmsetup subpartitions from super partition"
-		/sbin/parse-android-dynparts /dev/disk/by-partlabel/super | sh
-	fi
-
-	# Set $_syspart if it is specified as systempart= on the command line
-	if grep -q systempart= /proc/cmdline; then
+	# Check if we should prefer LVM mounts. If that's the case, try
+	# mounting the droidian-rootfs LV first, then fallback to the standard
+	# halium way (where we assume that userdata is a mountable partition)
+	if grep -q droidian.lvm /proc/cmdline; then
 		for x in $(cat /proc/cmdline); do
 			case ${x} in
-			systempart=*)
-				_syspart=${x#*=}
-				if [ -z ${_syspart##*:*} ]; then
-					_syspart_options=${_syspart##*:}
-					_syspart=${_syspart%%:*}
-				fi
+			droidian.lvm.prefer)
+				use_lvm="yes"
+				;;
+			droidian.lvm.vg=*)
+				search_vg=${x#*=}
+				;;
+			droidian.lvm.root_lv=*)
+				root_lv=${x#*=}
 				;;
 			esac
 		done
 
-		if [ -z "$_syspart_options" ]; then
-			_syspart_options=rw
+		# Set default search vgs and root_lv
+		[ -z "${search_vg}" ] && search_vg="droidian sailfish"
+		[ -z "${root_lv}" ] && root_lv="droidian-rootfs"
+	fi
+
+	if [ "${use_lvm}" == "yes" ]; then
+		for try in 1 2 3; do
+			for vg in ${search_vg}; do
+				if lvm vgchange -ay ${vg} && [ -e "/dev/${vg}/droidian-rootfs" ]; then
+					tell_kmsg "Found LVM VG ${vg}"
+					_syspart="/dev/${vg}/${root_lv}"
+					file_layout="partition"
+					break
+				fi
+			done
+			[ -n "${_syspart}" ] && break
+			sleep 2
+		done
+
+		# If _syspart is empty, LVM discovery failed. Let's continue
+		# normally
+		[ -z "${_syspart}" ] && unset use_lvm
+	fi
+
+	if [ "${use_lvm}" != "yes" ]; then
+		tell_kmsg "checking filesystem integrity for the userdata partition"
+		# Mounting and umounting first, let the kernel handle the journal and
+		# orphaned inodes (faster than e2fsck). Then, just run e2fsck forcing -y.
+		# Also check the amount of time used by to check the filesystem.
+		fsck_start=$(date +%s)
+		mount -o errors=remount-ro $path /tmpmnt
+		umount /tmpmnt
+		e2fsck -y $path >/run/e2fsck.out 2>&1
+		fsck_end=$(date +%s)
+		tell_kmsg "checking filesystem for userdata took (including e2fsck) $((fsck_end - fsck_start)) seconds"
+
+		resize_userdata_if_needed ${path}
+
+		tell_kmsg "mounting $path"
+
+		# Mount the data partition to a temporary mount point
+		# FIXME: data=journal used on ext4 as a workaround for bug 1387214
+		[ `blkid $path -o value -s TYPE` = "ext4" ] && OPTIONS="data=journal,"
+		mount -o discard,$OPTIONS $path /tmpmnt
+
+		# Set $_syspart if it is specified as systempart= on the command line
+		if grep -q systempart= /proc/cmdline; then
+			for x in $(cat /proc/cmdline); do
+				case ${x} in
+				systempart=*)
+					_syspart=${x#*=}
+					;;
+				esac
+			done
 		fi
-	fi
 
-	# We need to add the slot suffix to $_syspart for A/B devices
-	if [ -n "$_syspart" ] && [ ! -e "$_syspart" ] && [ ! -z "$ab_slot_suffix" ]; then
-		tell_kmsg "A/B slot system detected! Slot suffix is $ab_slot_suffix"
-		_syspart="${_syspart}${ab_slot_suffix}"
-		tell_kmsg "system partition is at $_syspart"
+		identify_file_layout
 	fi
-
-	identify_file_layout
 
 	# If both $imagefile and $_syspart are set, something is wrong. The strange
 	# output from this could be a clue in that situation.
@@ -555,7 +613,9 @@ mountroot() {
 
 	tell_kmsg "mounting system rootfs at /halium-system"
 	if [ -n "$_syspart" ]; then
-		mount -o "$_syspart_options" $_syspart /halium-system
+		mount -o rw $_syspart /halium-system
+
+		[ "${use_lvm}" == "yes" ] && resize_lvm_if_needed "${path}" "${vg}" "${root_lv}"
 	elif [ -f "$imagefile" ]; then
 		# Rootfs is an image file
 		mount -o loop,rw $imagefile /halium-system
@@ -570,12 +630,6 @@ mountroot() {
 
 	identify_android_image
 	[ $ANDROID_IMAGE_MODE = "unknown" ] && tell_kmsg "WARNING: Android system image not found."
-
-	if { [ -n "$_syspart_options" ] && [ -z "${_syspart_options##*ro*}" ]; } || [ -e /tmpmnt/.writable_image_overlay ] || [ -e /halium-system/.writable_image_overlay ]; then
-		# If systempart had to be mounted ro, mount rw overlayfs on top
-		mkdir -p /tmpmnt/rootfs-overlay /tmpmnt/rootfs-overlay-workdir
-		mount -t overlay rootfs -o lowerdir=/halium-system,upperdir=/tmpmnt/rootfs-overlay,workdir=/tmpmnt/rootfs-overlay-workdir /halium-system
-	fi
 
 	# If either (android) /data/.writable_image or (on rootfs)
 	# /.writable_image exist, mount the rootfs as rw
@@ -641,7 +695,7 @@ mountroot() {
 
 		# Mounting userdata outside of /android, to avoid having LXC container access it
 		mkdir -p ${rootmnt}/userdata
-		mount --move /tmpmnt ${rootmnt}/userdata
+		[ "${use_lvm}" != "yes" ] && mount --move /tmpmnt ${rootmnt}/userdata
 
 		mount --move /android-rootfs ${rootmnt}/var/lib/lxc/android/rootfs
 		[ $ANDROID_IMAGE_MODE = "system" ] && mount -o rw,size=4096 -t tmpfs none ${rootmnt}/android
