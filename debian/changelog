@@ -1,3 +1,12 @@
+initramfs-tools-halium (0.95-1) UNRELEASED; urgency=medium
+
+  * [packaging] Build-depend on parse-android-dynparts and dmsetup.
+      Need this to mount vendor and get the touchscreen firmware from.
+  * [scripts] Add setup_touchscreen script
+  * [scripts] Need to mount vendor before setting up touchscreen
+
+ -- arpio23 <alex@familyrutz.com>  Thu, 22 Dec 2022 19:47:20 -0700
+
 initramfs-tools-halium (0.95) UNRELEASED; urgency=medium
 
   * Initial changes for Halium
