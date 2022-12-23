@@ -1,0 +1,47 @@
+halium_hook_setup_touchscreen()
+{
+	tell_kmsg "Setup touchscreen for Moto G Power"
+
+	touch_class_path=/sys/class/touchscreen
+	touch_product_string=$(ls $touch_class_path)
+	touch_path=/sys$(cat $touch_class_path/$touch_product_string/path | awk '{print $1}')
+	product=$(grep -o 'androidboot\.hab\.product=......' /proc/cmdline | cut -d "=" -f2 | cut -d' ' -f1)
+	chip_id=$(cat $touch_path/productinfo)
+	panel_supplier=$(cat $touch_path/panel_supplier)
+	vendor_name=$(cat $touch_path/uevent | grep OF_NAME | cut -d "=" -f2)
+	fw_name=
+	power_on=0
+	count=0
+
+	while true; do
+		power_on=$(cat $touch_path/poweron)
+		if [ "$power_on" == "1" ]; then
+			tell_kmsg "touchscreen: ready to flash"
+			break;
+		fi
+		count=$((count+1))
+		sleep 1
+		if [ $count -eq 60 ]; then
+			tell_kmsg "touchscreen: ERROR: not ready to flash after 60 seconds"
+			return 1
+		fi
+	done
+
+	tell_kmsg "touchscreen: vendor is $vendor_name"
+	tell_kmsg "touchscreen: panel supplier is $panel_supplier"
+
+	if [ ! -z "$panel_supplier" ]; then
+		fw_name=$(find /vendor/firmware -name "$vendor_name-$panel_supplier-$chip_id-*-$product.bin")
+		fw_name=$(echo ${fw_name##*/})
+		fw_name=$(echo $fw_name|tr -d '\n')
+	else
+		fw_name=$(find /vendor/firmware -name "$vendor_name-$chip_id-*-$product.bin")
+		fw_name=$(echo ${fw_name##*/})
+		fw_name=$(echo $fw_name|tr -d '\n')
+	fi
+
+	tell_kmsg "touchscreen: flashing $fw_name"
+	echo $fw_name > $touch_path/fts_force_upgrade
+
+	return 0
+}
