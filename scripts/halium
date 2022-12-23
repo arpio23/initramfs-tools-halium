@@ -579,6 +579,24 @@ mountroot() {
 
 	# On systems with A/B partition layout, current slot is provided via cmdline parameter.
 	ab_slot_suffix=$(grep -o 'androidboot\.slot_suffix=..' /proc/cmdline |  cut -d "=" -f2)
+
+	# setup super partition if exists
+	if [ -n "/dev/disk/by-partlabel/super" ]; then
+		dmsetup create --concise "$(parse-android-dynparts /dev/disk/by-partlabel/super)"
+		tell_kmsg "Found super partition"
+	fi
+	
+	tell_kmsg "Mount Vendor parition: /dev/mapper/dynpart-vendor${ab_slot_suffix}"
+	mkdir -p /vendor
+	vendor_images="/dev/mapper/dynpart-vendor${ab_slot_suffix}"
+	for image in $vendor_images; do
+		if [ -e $image ]; then
+			mount $image /vendor -o ro
+		fi
+	done
+
+	halium_hook setup_touchscreen
+
 	if [ -z "$path" ] && [ ! -z "$ab_slot_suffix" ] ; then
 		tell_kmsg "Searching for A/B data partition on slot $ab_slot_suffix."
 
