@@ -595,6 +595,7 @@ mountroot() {
 		fi
 	done
 
+	halium_hook symlinks_motog
 	halium_hook setup_touchscreen
 
 	if [ -z "$path" ] && [ ! -z "$ab_slot_suffix" ] ; then

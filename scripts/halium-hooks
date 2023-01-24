@@ -45,3 +45,10 @@ halium_hook_setup_touchscreen()
 
 	return 0
 }
+
+halium_hook_symlinks_motog() {
+	mkdir -p /dev/block/platform/soc/4744000.sdhci/by-name/
+	ln -s /dev/disk/by-partlabel/hw /dev/block/platform/soc/4744000.sdhci/by-name/hw
+	ln -s /dev/disk/by-partlabel/utags /dev/block/platform/soc/4744000.sdhci/by-name/utags
+	ln -s /dev/disk/by-partlabel/utagsBackup /dev/block/platform/soc/4744000.sdhci/by-name/utagsBackup
+}
