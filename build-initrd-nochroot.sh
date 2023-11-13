@@ -78,4 +78,4 @@ sed \
 	/usr/sbin/mkinitramfs \
 	> ${tmpdir}/mkinitramfs
 
-exec /bin/bash ${tmpdir}/mkinitramfs -c gzip -d ${tmpdir}/etc/initramfs-tools -o ${OUT}/initrd.img-halium-generic -v
+exec /bin/bash ${tmpdir}/mkinitramfs -c lz4 -d ${tmpdir}/etc/initramfs-tools -o ${OUT}/initrd.img-halium-generic -v
