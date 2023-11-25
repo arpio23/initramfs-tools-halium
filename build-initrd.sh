@@ -4,7 +4,7 @@ set -e
 
 export FLASH_KERNEL_SKIP=1
 export DEBIAN_FRONTEND=noninteractive
-DEFAULTMIRROR="https://deb.debian.org/debian"
+DEFAULTMIRROR="https://archive.debian.org/debian"
 DEFAULTUBPORTSMIRROR="http://repo.ubports.com/"
 UBPORTSKEYRING="https://repo.ubports.com/keyring.gpg"
 APT_COMMAND="apt -y"
