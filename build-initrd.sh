@@ -2,7 +2,7 @@
 
 set -e
 
-MINIENV_HOOKS="cryptroot plymouth unl0kr droidian-encryption-service"
+MINIENV_HOOKS="cryptroot droidian-encryption-service"
 
 export FLASH_KERNEL_SKIP=1
 export DEBIAN_FRONTEND=noninteractive
@@ -61,7 +61,7 @@ done
 [ -z $FILENAME ] && FILENAME="initrd.img-halium-generic"
 
 # list all packages needed for halium's initrd here
-[ -z $INCHROOTPKGS ] && INCHROOTPKGS="initramfs-tools dctrl-tools e2fsprogs libc6-dev zlib1g-dev libssl-dev busybox-static lvm2 cryptsetup xkb-data dropbear pigz liblz4-tool"
+[ -z $INCHROOTPKGS ] && INCHROOTPKGS="initramfs-tools dctrl-tools e2fsprogs libc6-dev zlib1g-dev libssl-dev busybox-static lvm2 cryptsetup dropbear pigz liblz4-tool"
 
 BOOTSTRAP_BIN="debootstrap --arch $ARCH --variant=minbase"
 
@@ -124,12 +124,6 @@ do_chroot $ROOT "$APT_COMMAND dist-upgrade"
 do_chroot $ROOT "$APT_COMMAND install $INCHROOTPKGS --no-install-recommends"
 DEB_HOST_MULTIARCH=$(chroot $ROOT dpkg-architecture -q DEB_HOST_MULTIARCH)
 
-# Droidian: copy touchscreen, keyboard data
-cp /etc/udev/rules.d/90-touchscreen.rules "${ROOT}/etc/udev/rules.d"
-cp -R /usr/share/X11/xkb/* "${ROOT}/usr/share/X11/xkb"
-mkdir -p "${ROOT}/usr/lib/udev/hwdb.d"
-cp -R /usr/lib/udev/hwdb.d/* "${ROOT}/usr/lib/udev/hwdb.d"
-
 cp -a conf/halium ${ROOT}/usr/share/initramfs-tools/conf.d
 cp -a scripts/* ${ROOT}/usr/share/initramfs-tools/scripts
 cp -a hooks/* ${ROOT}/usr/share/initramfs-tools/hooks
@@ -146,9 +140,6 @@ export verbose="y"
 
 # Create initial skeleton, hook might get confused
 mkdir -p ${DESTDIR}/etc ${DESTDIR}/usr/lib ${DESTDIR}/lib ${DESTDIR}/mnt ${DESTDIR}/tmp
-
-# Droidian specific
-/usr/sbin/plymouth-set-default-theme -R droidian
 
 for hook in ${MINIENV_HOOKS}; do
 	bash -x /usr/share/initramfs-tools/hooks/${hook}
